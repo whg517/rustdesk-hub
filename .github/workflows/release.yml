@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      pending: ${{ steps.tag.outputs.pending }}
+    steps:
+      - name: Check version and release status
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+          if [[ ! "$TAG_NAME" =~ $pattern || ${#TAG_NAME} -gt 128 ]]; then
+            echo '::error::Use a version tag such as v1.2.3 or v1.2.3-rc.1.'
+            exit 1
+          fi
+          response=$(gh api --include "repos/$GH_REPO/releases/tags/$TAG_NAME" 2>&1 || true)
+          status=$(awk '/^HTTP\// {print $2; exit}' <<< "$response")
+          case "$status" in
+            200) echo 'This version already has a GitHub Release.' >> "$GITHUB_STEP_SUMMARY" ;;
+            404) echo 'pending=true' >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::Unable to look up GitHub Release (HTTP ${status:-unknown})."; exit 1 ;;
+          esac
+  checks:
+    needs: prepare
+    if: needs.prepare.outputs.pending == 'true'
+    uses: ./.github/workflows/checks.yml
+  image:
+    needs: checks
+    uses: ./.github/workflows/container.yml
+    with:
+      tag: ${{ github.ref_name }}
+      require_publish: true
+    secrets:
+      QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+      QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+  publish:
+    name: Publish GitHub Release
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release with the image digest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo '::error::The published image digest is missing.'
+            exit 1
+          fi
+          options=(--verify-tag --generate-notes)
+          if [[ "$TAG_NAME" == *-* ]]; then
+            options+=(--prerelease)
+          fi
+          notes=$(printf "Container image \`%s:%s\`.\n\n\`\`\`sh\ndocker pull %s@%s\n\`\`\`\n" "$IMAGE" "$TAG_NAME" "$IMAGE" "$DIGEST")
+          gh release create "$TAG_NAME" "${options[@]}" --notes "$notes"

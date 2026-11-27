@@ -20,6 +20,8 @@ go build -o rustdesk-hub ./cmd/rustdesk-hub
 
 部署时复制 `rustdesk-hub` 可执行文件，并为实例提供配置、SQLite 数据目录以及直接提供 HTTPS 时所需的证书文件。若启动提示内嵌管理端资源不可用，请先完成网页构建，再重新编译 Hub。
 
+使用容器部署、配置 Quay 凭据或发布版本时，见 [流水线与容器发布](docs/ci-and-release.md)。
+
 ## 运行配置
 
 从项目根目录复制 [配置示例](config.example.yaml)，再按部署环境编辑。

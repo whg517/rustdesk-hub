@@ -1,0 +1,112 @@
+name: Container
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      additional_tag:
+        type: string
+      require_publish:
+        type: boolean
+        default: false
+    secrets:
+      QUAY_USERNAME:
+        required: false
+      QUAY_TOKEN:
+        required: false
+    outputs:
+      image:
+        value: ${{ jobs.build.outputs.image }}
+      digest:
+        value: ${{ jobs.build.outputs.digest }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build container image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    outputs:
+      image: ${{ steps.plan.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Resolve Quay image and tags
+        id: plan
+        shell: bash
+        env:
+          CONFIGURED_IMAGE: ${{ vars.QUAY_IMAGE }}
+          DEFAULT_IMAGE: quay.io/${{ github.repository }}
+          IMAGE_TAG: ${{ inputs.tag }}
+          ADDITIONAL_TAG: ${{ inputs.additional_tag }}
+          REQUIRE_PUBLISH: ${{ inputs.require_publish }}
+          HAS_USERNAME: ${{ secrets.QUAY_USERNAME != '' }}
+          HAS_TOKEN: ${{ secrets.QUAY_TOKEN != '' }}
+        run: |
+          image=${CONFIGURED_IMAGE:-$DEFAULT_IMAGE}
+          if [[ ! "$image" =~ ^quay\.io/[a-z0-9][a-z0-9_-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+            echo '::error::QUAY_IMAGE must have the form quay.io/namespace/repository.'
+            exit 1
+          fi
+          if [[ "$HAS_USERNAME" != "$HAS_TOKEN" ]]; then
+            echo '::error::Configure both QUAY_USERNAME and QUAY_TOKEN.'
+            exit 1
+          fi
+          if [[ "$HAS_USERNAME" != true ]]; then
+            if [[ "$REQUIRE_PUBLISH" == true ]]; then
+              echo '::error::Versioned image publishing requires QUAY_USERNAME and QUAY_TOKEN.'
+              exit 1
+            fi
+            echo '::warning::Quay publishing is pending. Configure QUAY_USERNAME and QUAY_TOKEN to enable the push.'
+          fi
+          {
+            echo "image=$image"
+            echo "publish=$HAS_USERNAME"
+            echo 'tags<<IMAGE_TAGS'
+            echo "$image:$IMAGE_TAG"
+            if [[ -n "$ADDITIONAL_TAG" ]]; then
+              echo "$image:$ADDITIONAL_TAG"
+            fi
+            echo 'IMAGE_TAGS'
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: steps.plan.outputs.publish == 'true'
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        id: build
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ steps.plan.outputs.publish == 'true' }}
+          tags: ${{ steps.plan.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=rustdesk-hub
+          cache-to: type=gha,scope=rustdesk-hub,mode=max
+      - name: Report Quay publication
+        shell: bash
+        env:
+          IMAGE: ${{ steps.plan.outputs.image }}
+          IMAGE_TAG: ${{ inputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLISHED: ${{ steps.plan.outputs.publish }}
+        run: |
+          if [[ "$PUBLISHED" == true ]]; then
+            printf "Published \`%s:%s\` as \`%s@%s\`.\n" "$IMAGE" "$IMAGE_TAG" "$IMAGE" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf "Built \`%s:%s\`. Quay push is pending registry credentials.\n" "$IMAGE" "$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -1,0 +1,13 @@
+# 复制为 config.yaml 后按部署环境修改。相对路径以 Hub 的启动目录为准。
+db: "data/hub.sqlite3"
+listen: "127.0.0.1:8080"
+public-url: "http://127.0.0.1:8080"
+
+# RustDesk 连接参数由管理员在网页「系统设置」中管理。
+
+# 跨主机 HTTPS 反向代理使用受保护的 HTTP 上游时设为 true。
+behind-proxy: false
+
+# Hub 直接提供 HTTPS 时填写证书链和私钥的文件路径。
+tls-cert: ""
+tls-key: ""

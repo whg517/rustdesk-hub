@@ -1,0 +1,6 @@
+/data/
+/config.yaml
+/rustdesk-hub
+/web/dist/*
+!/web/dist/.gitkeep
+/web/node_modules/
